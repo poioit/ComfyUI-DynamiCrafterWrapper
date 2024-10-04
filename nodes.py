@@ -11,7 +11,7 @@ import comfy.utils
 from contextlib import nullcontext
 from .lvdm.models.samplers.ddim import DDIMSampler
 from .lvdm.modules.networks.openaimodel3d import ControlNet
-
+import typing
 from contextlib import nullcontext
 try:
     from accelerate import init_empty_weights
@@ -757,23 +757,48 @@ class ToonCrafterInterpolation:
                 "image_embed_ratio": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "augmentation_level": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 10.0, "step": 0.0001}),
                 "optional_latents": ("LATENT",),
+                "frame_indices": ("LIST",),
                 "ddpm_from": ("INT", {"default": 1000, "min": 1, "max": 1000, "step": 1}),
                 "controlnet": ("DC_CONTROL",),
             }
         }
 
-    RETURN_TYPES = ("LATENT",)
-    RETURN_NAMES = ("samples",)
+    RETURN_TYPES = ("LATENT","INDICES")
+    RETURN_NAMES = ("samples","output_indices")
     FUNCTION = "process"
     CATEGORY = "DynamiCrafterWrapper"
 
+    
+            
     def process(self, model, clip_vision, images, positive, negative, cfg, steps, eta, seed, fs, frames, 
-                vae_dtype, image_embed_ratio=1.0, augmentation_level=0, optional_latents=None, ddpm_from=1000, controlnet=None):
+                vae_dtype, image_embed_ratio=1.0, augmentation_level=0, optional_latents=None, ddpm_from=1000, controlnet=None,
+                frame_indices: typing.List[int]=None):
+        def frange(start, stop, step):
+            while start < stop:
+                yield start
+                start += step
         device = mm.get_torch_device()
         offload_device = mm.unet_offload_device()
         mm.unload_all_models()
         mm.soft_empty_cache()
 
+        ### hank set frame indices
+        output_indices =[]
+        indices = frame_indices
+        #Ensure that input frames are in fp32 - the same dtype as model
+        # if len(indices)==len(images):
+        #     multiplier = indices[idx+1]-indices[idx]
+        # if multiplier>1:
+        #     # frame_0 = frames[frame_itr:frame_itr+1].to(DEVICE).float()
+        #     # frame_1 = frames[frame_itr+1:frame_itr+2].to(DEVICE).float()
+        #     # relust = inference(film_model, frame_0, frame_1, multiplier - 1)
+        #     # # print(bcolors.OKGREEN + f'relust size = {relust[0].shape}'+bcolors.ENDC)
+        #     # output_frames.extend(postprocess_frames(torch.cat([frame.detach().cpu().to(dtype=dtype) for frame in relust[1:-1]],dim=0)))
+        #     # output_indices.extend(range(indices[idx]+1,indices[idx+1]))
+
+        #     number_of_frames_processed_since_last_cleared_cuda_cache += 1
+            
+        ###
         torch.manual_seed(seed)
 
         self.model = model['model']
@@ -816,6 +841,13 @@ class ToonCrafterInterpolation:
         with torch.autocast(comfy.model_management.get_autocast_device(device), dtype=dtype) if autocast_condition else nullcontext():
             for i in range(len(images) - 1):
                 videos, videos2 = None, None
+                indice_start, indice_end = indices[i], indices[i+1]
+                distance = indice_end-indice_start-1
+                if frames >= distance:
+                    step = frames/distance
+                    output_indices.extend(range(indice_start+1,indice_end))
+                else:
+                    print("tbd")
                 mm.soft_empty_cache()
                 image = images[i].unsqueeze(0)
                 image2 = images[i+1].unsqueeze(0)
@@ -943,6 +975,8 @@ class ToonCrafterInterpolation:
                 print(f"Sampled {i+1} out of {(len(images) - 1)}")
                 assert not torch.isnan(samples).any().item(), "Resulting tensor containts NaNs. I'm unsure why this happens, changing step count and/or image dimensions might help."
                 samples = samples.squeeze(0).permute(1, 0, 2, 3).cpu().to(self.model.first_stage_model.dtype)
+                samples = [samples[round(k) if round(k) < frames else round(k)-1][None,] for k in frange(0,frames,step)]
+                samples = torch.cat(samples, dim=0)
                 out.append(samples)
                 pbar.update(1)
 
@@ -957,7 +991,7 @@ class ToonCrafterInterpolation:
                 "hidden_states": hidden_states,
                 }
 
-            return (latent,)
+            return (latent,output_indices,)
         
 class DynamiCrafterControlnetApply:
     @classmethod
