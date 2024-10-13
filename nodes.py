@@ -13,6 +13,8 @@ from .lvdm.models.samplers.ddim import DDIMSampler
 from .lvdm.modules.networks.openaimodel3d import ControlNet
 import typing
 from contextlib import nullcontext
+import comfy.model_management
+
 try:
     from accelerate import init_empty_weights
     is_accelerate_available = True
@@ -777,6 +779,9 @@ class ToonCrafterInterpolation:
             while start < stop:
                 yield start
                 start += step
+        if (images is None):
+            comfy.model_management.interrupt_current_processing()
+            return (None,[])
         device = mm.get_torch_device()
         offload_device = mm.unet_offload_device()
         mm.unload_all_models()
@@ -975,7 +980,9 @@ class ToonCrafterInterpolation:
                 print(f"Sampled {i+1} out of {(len(images) - 1)}")
                 assert not torch.isnan(samples).any().item(), "Resulting tensor containts NaNs. I'm unsure why this happens, changing step count and/or image dimensions might help."
                 samples = samples.squeeze(0).permute(1, 0, 2, 3).cpu().to(self.model.first_stage_model.dtype)
-                samples = [samples[round(k) if round(k) < frames else round(k)-1][None,] for k in frange(0,frames,step)]
+                for k in frange(0,frames,step):
+                    print(k)
+                samples = [samples[round(k) if round(k) < frames else round(k)-1][None,] for k in frange(step,frames+step/2,step)]
                 samples = torch.cat(samples, dim=0)
                 out.append(samples)
                 pbar.update(1)
