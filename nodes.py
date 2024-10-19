@@ -765,8 +765,8 @@ class ToonCrafterInterpolation:
             }
         }
 
-    RETURN_TYPES = ("LATENT","INDICES")
-    RETURN_NAMES = ("samples","output_indices")
+    RETURN_TYPES = ("LATENT","INDICES","INDICES")
+    RETURN_NAMES = ("samples","output_indices", "out_pick")
     FUNCTION = "process"
     CATEGORY = "DynamiCrafterWrapper"
 
@@ -782,6 +782,7 @@ class ToonCrafterInterpolation:
         if (images is None):
             comfy.model_management.interrupt_current_processing()
             return (None,[])
+        print("Tooncrafter seed:"+str(seed))
         device = mm.get_torch_device()
         offload_device = mm.unet_offload_device()
         mm.unload_all_models()
@@ -841,10 +842,12 @@ class ToonCrafterInterpolation:
 
         out = []
         hidden_states = []
+        out_pick = []
         pbar = comfy.utils.ProgressBar(len(images) - 1)
         autocast_condition = (dtype != torch.float32) and not comfy.model_management.is_device_mps(device)
         with torch.autocast(comfy.model_management.get_autocast_device(device), dtype=dtype) if autocast_condition else nullcontext():
             for i in range(len(images) - 1):
+                torch.manual_seed(seed+123)
                 videos, videos2 = None, None
                 indice_start, indice_end = indices[i], indices[i+1]
                 distance = indice_end-indice_start-1
@@ -953,6 +956,8 @@ class ToonCrafterInterpolation:
                     samples_in = samples_in.to(dtype).to(device)
                 else:
                     samples_in = None
+                #if samples_in == None:
+                #    samples_in = torch.randn(noise_shape, device=device)
 
                 self.model.model.diffusion_model.to(device)
                 ddim_sampler = DDIMSampler(self.model)
@@ -980,10 +985,11 @@ class ToonCrafterInterpolation:
                 print(f"Sampled {i+1} out of {(len(images) - 1)}")
                 assert not torch.isnan(samples).any().item(), "Resulting tensor containts NaNs. I'm unsure why this happens, changing step count and/or image dimensions might help."
                 samples = samples.squeeze(0).permute(1, 0, 2, 3).cpu().to(self.model.first_stage_model.dtype)
-                for k in frange(0,frames,step):
+                for k in frange(step,frames+step/2,step):
                     print(k)
-                samples = [samples[round(k) if round(k) < frames else round(k)-1][None,] for k in frange(step,frames+step/2,step)]
-                samples = torch.cat(samples, dim=0)
+                out_pick.append([round(k) if round(k) < frames else round(k)-1 for k in frange(step,frames+step/2,step)])
+                #samples = [samples[round(k) if round(k) < frames else round(k)-1][None,] for k in frange(step,frames+step/2,step)]
+                #samples = torch.cat(samples, dim=0)
                 out.append(samples)
                 pbar.update(1)
 
@@ -998,7 +1004,7 @@ class ToonCrafterInterpolation:
                 "hidden_states": hidden_states,
                 }
 
-            return (latent,output_indices,)
+            return (latent,output_indices,out_pick)
         
 class DynamiCrafterControlnetApply:
     @classmethod
@@ -1052,6 +1058,7 @@ class ToonCrafterDecode:
                     }),
             },
               "optional": {
+                "out_pick": ("INDICES", {"default":None}),
                 "prune_last_frame": ("BOOLEAN", {"default": False}),
               }
         }
@@ -1061,7 +1068,7 @@ class ToonCrafterDecode:
     FUNCTION = "process"
     CATEGORY = "DynamiCrafterWrapper"
 
-    def process(self, model, latent, vae_dtype, prune_last_frame=False):
+    def process(self, model, latent, vae_dtype, prune_last_frame=False, out_pick=None):
         device = mm.get_torch_device()
         offload_device = mm.unet_offload_device()
         mm.unload_all_models()
@@ -1115,11 +1122,15 @@ class ToonCrafterDecode:
                 video = video.squeeze(0).permute(0, 2, 3, 1)
                 iteration_counter += 1
                 pbar.update(1)
+                video = [video[j][None,] for j in out_pick[i//16]]
+                video = torch.cat(video, dim=0)
                 out.append(video)
                 del decoded_images
                 mm.soft_empty_cache()
         self.model.first_stage_model.to(offload_device)
+        #out[0] = [out[0][i] for i in range(2,3)]
         video_out = torch.cat(out, dim=0)
+        
         if prune_last_frame:
             video_out = video_out[torch.arange(video_out.shape[0]) % 16!= 0]
 
