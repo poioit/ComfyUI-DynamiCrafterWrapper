@@ -851,8 +851,9 @@ class ToonCrafterInterpolation:
                 videos, videos2 = None, None
                 indice_start, indice_end = indices[i], indices[i+1]
                 distance = indice_end-indice_start-1
-                if frames >= distance:
-                    step = frames/distance
+                total_frames = 14
+                if distance!= 0 and total_frames >= distance:
+                    step = total_frames/distance
                     output_indices.extend(range(indice_start+1,indice_end))
                 else:
                     print("tbd")
@@ -985,9 +986,10 @@ class ToonCrafterInterpolation:
                 print(f"Sampled {i+1} out of {(len(images) - 1)}")
                 assert not torch.isnan(samples).any().item(), "Resulting tensor containts NaNs. I'm unsure why this happens, changing step count and/or image dimensions might help."
                 samples = samples.squeeze(0).permute(1, 0, 2, 3).cpu().to(self.model.first_stage_model.dtype)
-                for k in frange(step,frames+step/2,step):
+                for k in frange(step,total_frames+step/2,step):
                     print(k)
-                out_pick.append([round(k) if round(k) < frames else round(k)-1 for k in frange(step,frames+step/2,step)])
+                if distance!= 0:
+                    out_pick.append([round(k) if round(k) < total_frames else round(k)-1 for k in frange(step,total_frames+step/2,step)])
                 #samples = [samples[round(k) if round(k) < frames else round(k)-1][None,] for k in frange(step,frames+step/2,step)]
                 #samples = torch.cat(samples, dim=0)
                 out.append(samples)
@@ -1122,9 +1124,12 @@ class ToonCrafterDecode:
                 video = video.squeeze(0).permute(0, 2, 3, 1)
                 iteration_counter += 1
                 pbar.update(1)
-                video = [video[j][None,] for j in out_pick[i//16]]
-                video = torch.cat(video, dim=0)
-                out.append(video)
+                ## hank add for choose index
+                if len(out_pick) > i//16:
+                    video = [video[j][None,] for j in out_pick[i//16]]
+                    video = torch.cat(video, dim=0)
+                ## 
+                    out.append(video)
                 del decoded_images
                 mm.soft_empty_cache()
         self.model.first_stage_model.to(offload_device)
